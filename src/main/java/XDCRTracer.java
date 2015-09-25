@@ -12,7 +12,6 @@ import com.couchbase.client.java.error.TemporaryFailureException;
 import com.sun.deploy.util.StringUtils;
 
 import rx.Observable;
-import rx.functions.Func1;
 
 /**
  * XDCRTracer creates a document in every vBucket in every Bucket in every
@@ -45,9 +44,9 @@ public class XDCRTracer
     {
         this.interval = interval;
         this.env = DefaultCouchbaseEnvironment.create();
-        this.clusters = new ArrayList<Cluster>();
-        this.origins = new HashMap<String, HashMap<String, Bucket>>();
-        this.destinations = new HashMap<String, HashMap<String, Bucket>>();
+        this.clusters = new ArrayList<>();
+        this.origins = new HashMap<>();
+        this.destinations = new HashMap<>();
 
         // Start-up the cluster connections and bucket connections for master clusters
         for(ArrayList<String> masterCluster : masterClusters) {
@@ -76,10 +75,9 @@ public class XDCRTracer
      */
     protected HashMap<String, Bucket> openBuckets(Cluster cluster, ArrayList<String> bucketNames)
     {
-        HashMap<String, Bucket> buckets = new HashMap<String, Bucket>();
-        for(String bucketName : bucketNames) {
-            buckets.put(bucketName, cluster.openBucket(bucketName));
-        }
+        HashMap<String, Bucket> buckets = new HashMap<>();
+        bucketNames.forEach(bucketName -> buckets.put(bucketName, cluster.openBucket(bucketName)));
+
         return buckets;
     }
 
@@ -91,31 +89,34 @@ public class XDCRTracer
     public void run()
     {
         //while(true) {
-            ArrayList<String> keys = new ArrayList<String>();
+            ArrayList<String> keys = new ArrayList<>();
 
             // Add all the keys
-            for(Map.Entry<String, HashMap<String, Bucket>> cluster : origins.entrySet()) {
+            origins.forEach((clusterName, buckets) -> {
                 String[] clusterKeys = KeyGen.fillVBuckets(
-                        "XDCRTracer_" + cluster.getKey() + "_" + System.currentTimeMillis() / 1000l + "_");
+                        "XDCRTracer_" + clusterName + "_" + System.currentTimeMillis() / 1000l + "_"
+                );
                 keys.addAll(Arrays.asList(clusterKeys));
-                for(Bucket bucket : cluster.getValue().values()) {
-                    seedBucket(bucket, clusterKeys);
-                }
-            }
+                buckets.forEach((bucketName, bucket) -> seedBucket(bucket, clusterKeys));
+            });
+
             try {
                 Thread.sleep(interval * 1000);
             } catch(InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            for(Map.Entry<String, HashMap<String, Bucket>> cluster : destinations.entrySet()) {
-                for(Map.Entry<String, Bucket> bucket : cluster.getValue().entrySet()) {
-                    System.out.println("Checking bucket: " + cluster.getKey() + "/" + bucket.getKey());
-                    ArrayList<Integer> badvBuckets = checkBucket(bucket.getValue(), keys);
+
+
+            destinations.forEach((clusterName, buckets) ->
+                buckets.forEach((bucketName, bucket) -> {
+                    System.out.println("Checking bucket: " + clusterName + "/" + bucketName);
+                    ArrayList<Integer> badvBuckets = checkBucket(bucket, keys);
                     if(badvBuckets.size() > 0) {
-                        System.out.println("Missing documents in " + cluster.getKey() + "/" + bucket.getKey() + ": " + badvBuckets);
+                        System.out.println("Missing documents in " + clusterName + "/" + bucketName + ": " + badvBuckets);
                     }
-                }
-            }
+                })
+
+            );
 
         //}
     }
@@ -128,35 +129,23 @@ public class XDCRTracer
      * @return vBucket List
      */
     protected ArrayList<Integer> checkBucket(final Bucket bucket, final Collection<String> keys) {
-        List<JsonDocument> result;
+        List<String> result;
         try {
             result = Observable
                     .from(keys)
-                    .flatMap(new Func1<String, Observable<JsonDocument>>() {
-                        public Observable<JsonDocument> call(String id) {
-                            return bucket.async().get(id);
-                        }
-                    })
+                    .flatMap(id -> bucket.async().get(id).map(doc -> doc.id()).onErrorReturn(err -> ""))
                     .toList()
                     .toBlocking()
                     .single();
         } catch(TemporaryFailureException e) {
             System.err.println("Couldn't get keys from bucket (TemporaryFailureException, vBucket file may have been deleted)");
-            return new ArrayList<Integer>();
+            return new ArrayList<>();
         }
 
 
-        ArrayList<Integer> vbuckets = new ArrayList<Integer>();
+        ArrayList<Integer> vbuckets = new ArrayList<>();
         for(String x : keys) {
-            boolean skip = false;
-            for(JsonDocument y : result) {
-
-                if(y.id().equals(x)) {
-                    skip = true;
-                    break;
-                }
-            }
-            if(!skip) {
+            if(!result.contains(x)) {
                 vbuckets.add(KeyGen.vBucket(x));
             }
         }
@@ -170,18 +159,14 @@ public class XDCRTracer
      * @param keys
      */
     protected void seedBucket(final Bucket bucket, String[] keys) {
-        ArrayList<JsonDocument> documents = new ArrayList<JsonDocument>();
+        ArrayList<JsonDocument> documents = new ArrayList<>();
         for(String key : keys) {
             JsonObject content = JsonObject.create();
             documents.add(JsonDocument.create(key, interval * 4, content));
         }
         Observable
                 .from(documents)
-                .flatMap(new Func1<JsonDocument, Observable<JsonDocument>>() {
-                    public Observable<JsonDocument> call(final JsonDocument docToInsert) {
-                        return bucket.async().insert(docToInsert);
-                    }
-                })
+                .flatMap(docToInsert -> bucket.async().insert(docToInsert))
                 .last()
                 .toBlocking()
                 .single();
@@ -193,9 +178,7 @@ public class XDCRTracer
     public void shutdown()
     {
         System.out.println("Shutting down");
-        for(Cluster cluster : clusters) {
-            cluster.disconnect();
-        }
+        clusters.forEach(Cluster::disconnect);
         env.shutdown();
     }
 
@@ -208,18 +191,18 @@ public class XDCRTracer
         int interval = 5; // Delays
 
         // Clusters to put documents into
-        ArrayList<String> CHO = new ArrayList<String>(Arrays.asList("192.168.75.101", "192.168.75.102"));
-        ArrayList<String> SGL = new ArrayList<String>(Arrays.asList("192.168.75.103"));
+        ArrayList<String> CHO = new ArrayList<>(Arrays.asList("192.168.75.101", "192.168.75.102"));
+        ArrayList<String> SGL = new ArrayList<>(Arrays.asList("192.168.75.103"));
 
-        ArrayList<ArrayList<String>> masterClusters = new ArrayList<ArrayList<String>>();
+        ArrayList<ArrayList<String>> masterClusters = new ArrayList<>();
         masterClusters.add(SGL);
         masterClusters.add(CHO);
 
         // Clusters to also check
-        ArrayList<ArrayList<String>> replicaClusters = new ArrayList<ArrayList<String>>();
+        ArrayList<ArrayList<String>> replicaClusters = new ArrayList<>();
 
         // Buckets to check
-        ArrayList<String> bucketNames = new ArrayList<String>(Arrays.asList("default"));
+        ArrayList<String> bucketNames = new ArrayList<>(Arrays.asList("default"));
 
         XDCRTracer tracer = new XDCRTracer(interval, masterClusters, replicaClusters, bucketNames);
         tracer.run();
