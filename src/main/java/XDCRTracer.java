@@ -2,15 +2,11 @@ import java.util.*;
 
 import com.couchbase.client.java.Bucket;
 import com.couchbase.client.java.Cluster;
-import com.couchbase.client.java.CouchbaseBucket;
 import com.couchbase.client.java.CouchbaseCluster;
 import com.couchbase.client.java.document.JsonDocument;
 import com.couchbase.client.java.document.json.JsonObject;
 import com.couchbase.client.java.env.CouchbaseEnvironment;
 import com.couchbase.client.java.env.DefaultCouchbaseEnvironment;
-
-import com.couchbase.client.java.error.TemporaryFailureException;
-import com.sun.deploy.util.StringUtils;
 
 import rx.Observable;
 
