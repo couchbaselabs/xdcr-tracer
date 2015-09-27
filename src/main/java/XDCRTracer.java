@@ -2,6 +2,7 @@ import java.util.*;
 
 import com.couchbase.client.java.Bucket;
 import com.couchbase.client.java.Cluster;
+import com.couchbase.client.java.CouchbaseBucket;
 import com.couchbase.client.java.CouchbaseCluster;
 import com.couchbase.client.java.document.JsonDocument;
 import com.couchbase.client.java.document.json.JsonObject;
@@ -21,50 +22,36 @@ import rx.Observable;
 public class XDCRTracer
 {
     protected int interval;
+    protected int ttl;
 
-    protected CouchbaseEnvironment env;
-    protected ArrayList<Cluster> clusters;
-
-    protected HashMap<String, HashMap<String, Bucket>> origins;
-    protected HashMap<String, HashMap<String, Bucket>> destinations;
+    protected Map<String, ArrayList<Bucket>> origins;
+    protected Map<String, ArrayList<Bucket>> destinations;
 
     /**
      * Creates and XDCR Tracer
      * @param interval Time interval between checks in seconds
-     * @param masterClusters List of cluster lists for creating documents on
-     * @param replicaClusters List of cluster lists for additional monitoring
-     * @param bucketNames List of buckets for monitoring
+     * @param ttl Length of time for document expiry
+     * @param sources List of cluster lists for creating documents on
+     * @param replicas List of cluster lists for additional monitoring
      */
     XDCRTracer(
             int interval,
-            ArrayList<ArrayList<String>> masterClusters,
-            ArrayList<ArrayList<String>> replicaClusters,
-            ArrayList<String> bucketNames
+            int ttl,
+            Map<String, ArrayList<Bucket>> sources,
+            Map<String, ArrayList<Bucket>> replicas
     )
     {
         this.interval = interval;
-        this.env = DefaultCouchbaseEnvironment.create();
-        this.clusters = new ArrayList<>();
-        this.origins = new HashMap<>();
+        this.ttl = ttl;
+
+        if (ttl <= interval) throw new AssertionError("TTL must be greater than interval!");
+
+        this.origins = sources;
+
         this.destinations = new HashMap<>();
+        this.destinations.putAll(sources);
+        this.destinations.putAll(replicas);
 
-        // Start-up the cluster connections and bucket connections for master clusters
-        for(ArrayList<String> masterCluster : masterClusters) {
-            CouchbaseCluster cluster = CouchbaseCluster.create(env, masterCluster);
-            clusters.add(cluster);
-
-            HashMap<String, Bucket> buckets = openBuckets(cluster, bucketNames);
-            origins.put(masterCluster.get(0), buckets);
-            destinations.put("{" + StringUtils.join(masterCluster, ",") + "}", buckets);
-        }
-        // Start-up the cluster connections and bucket connections for destinationc clusters
-        for(ArrayList<String> replicaCluster : replicaClusters) {
-            CouchbaseCluster cluster = CouchbaseCluster.create(env, replicaCluster);
-            clusters.add(cluster);
-
-            HashMap<String, Bucket> buckets = openBuckets(cluster, bucketNames);
-            destinations.put("{" + StringUtils.join(replicaCluster, ", ") + "}", buckets);
-        }
     }
 
     /**
@@ -82,43 +69,48 @@ public class XDCRTracer
     }
 
     /**
-     * Continually creates keys in every vBucket in every bucket in every
+     * Creates keys in every vBucket in every bucket in every
      * source cluster and checks that all the keys make it to all the
      * clusters.
      */
-    public void run()
+    public void runOnce()
     {
-        //while(true) {
-            ArrayList<String> keys = new ArrayList<>();
+        // Future TODO: Use separate key lists for different buckets/clusters
+        // for XDCR topologies with varying buckets on different clusters
+        ArrayList<String> keys = new ArrayList<>();
 
-            // Add all the keys
-            origins.forEach((clusterName, buckets) -> {
-                String[] clusterKeys = KeyGen.fillVBuckets(
-                        "XDCRTracer_" + clusterName + "_" + System.currentTimeMillis() / 1000l + "_"
-                );
-                keys.addAll(Arrays.asList(clusterKeys));
-                buckets.forEach((bucketName, bucket) -> seedBucket(bucket, clusterKeys));
-            });
-
-            try {
-                Thread.sleep(interval * 1000);
-            } catch(InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-
-
-            destinations.forEach((clusterName, buckets) ->
-                buckets.forEach((bucketName, bucket) -> {
-                    System.out.println("Checking bucket: " + clusterName + "/" + bucketName);
-                    ArrayList<Integer> badvBuckets = checkBucket(bucket, keys);
-                    if(badvBuckets.size() > 0) {
-                        System.out.println("Missing documents in " + clusterName + "/" + bucketName + ": " + badvBuckets);
-                    }
-                })
-
+        // Add all the keys
+        origins.forEach((clusterName, buckets) -> {
+            String[] clusterKeys = KeyGen.fillVBuckets(
+                    "XDCRTracer_" + clusterName + "_" + System.currentTimeMillis() / 1000l + "_"
             );
+            keys.addAll(Arrays.asList(clusterKeys));
+            buckets.forEach(bucket -> seedBucket(bucket, clusterKeys));
+        });
 
-        //}
+        try {
+            Thread.sleep(interval * 1000);
+        } catch(InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+
+        destinations.forEach((clusterName, buckets) ->
+            buckets.forEach(bucket -> {
+                System.out.println("Checking bucket: " + clusterName + "/" + bucket.name());
+                ArrayList<Integer> badvBuckets = checkBucket(bucket, keys);
+                if (badvBuckets.size() > 0) {
+                    System.out.println("Missing documents in " + clusterName + "/" + bucket.name() + ": " + badvBuckets);
+                }
+            })
+
+        );
+    }
+
+    public void run() {
+        while(true) {
+            runOnce();
+        }
     }
 
     /**
@@ -129,27 +121,21 @@ public class XDCRTracer
      * @return vBucket List
      */
     protected ArrayList<Integer> checkBucket(final Bucket bucket, final Collection<String> keys) {
-        List<String> result;
-        try {
-            result = Observable
-                    .from(keys)
-                    .flatMap(id -> bucket.async().get(id).map(doc -> doc.id()).onErrorReturn(err -> ""))
-                    .toList()
-                    .toBlocking()
-                    .single();
-        } catch(TemporaryFailureException e) {
-            System.err.println("Couldn't get keys from bucket (TemporaryFailureException, vBucket file may have been deleted)");
-            return new ArrayList<>();
-        }
+        List<String> result = Observable
+                                .from(keys)
+                                .flatMap(id -> bucket.async().get(id).map(doc -> doc.id()).onErrorReturn(err -> ""))
+                                .toList()
+                                .toBlocking()
+                                .single();
 
 
-        ArrayList<Integer> vbuckets = new ArrayList<>();
+        ArrayList<Integer> vBuckets = new ArrayList<>();
         for(String x : keys) {
             if(!result.contains(x)) {
-                vbuckets.add(KeyGen.vBucket(x));
+                vBuckets.add(KeyGen.vBucket(x));
             }
         }
-        return vbuckets;
+        return vBuckets;
     }
 
     /**
@@ -162,7 +148,7 @@ public class XDCRTracer
         ArrayList<JsonDocument> documents = new ArrayList<>();
         for(String key : keys) {
             JsonObject content = JsonObject.create();
-            documents.add(JsonDocument.create(key, interval * 4, content));
+            documents.add(JsonDocument.create(key, ttl, content));
         }
         Observable
                 .from(documents)
@@ -173,39 +159,38 @@ public class XDCRTracer
     }
 
     /**
-     * Handles shutdown of the cluster
-     */
-    public void shutdown()
-    {
-        System.out.println("Shutting down");
-        clusters.forEach(Cluster::disconnect);
-        env.shutdown();
-    }
-
-    /**
      * Handles CLI entry
      * @param args
      */
     public static void main(String [] args)
     {
         int interval = 5; // Delays
+        int ttl = 15;
 
-        // Clusters to put documents into
-        ArrayList<String> CHO = new ArrayList<>(Arrays.asList("192.168.75.101", "192.168.75.102"));
-        ArrayList<String> SGL = new ArrayList<>(Arrays.asList("192.168.75.103"));
+        CouchbaseEnvironment env = DefaultCouchbaseEnvironment.create();
 
-        ArrayList<ArrayList<String>> masterClusters = new ArrayList<>();
-        masterClusters.add(SGL);
-        masterClusters.add(CHO);
+        /* CHO Bucket Connections */
+        CouchbaseCluster CHO = CouchbaseCluster.create(env, Arrays.asList("192.168.75.101", "192.168.75.102"));
+        Bucket CHO_Default = CHO.openBucket("default");
+        ArrayList<Bucket> CHOBuckets = new ArrayList<>(Arrays.asList(CHO_Default));
 
-        // Clusters to also check
-        ArrayList<ArrayList<String>> replicaClusters = new ArrayList<>();
+        /* SGL Bucket Connections */
+        CouchbaseCluster SGL = CouchbaseCluster.create(env, "192.168.75.103");
+        Bucket SGL_Default = SGL.openBucket("default");
+        ArrayList<Bucket> SGLBuckets = new ArrayList<>(Arrays.asList(SGL_Default));
 
-        // Buckets to check
-        ArrayList<String> bucketNames = new ArrayList<>(Arrays.asList("default"));
+        /* Buckets maps */
+        Map<String, ArrayList<Bucket>> sources = new HashMap<>();
+        Map<String, ArrayList<Bucket>> replicas = new HashMap<>();
 
-        XDCRTracer tracer = new XDCRTracer(interval, masterClusters, replicaClusters, bucketNames);
+        sources.put("CHO", CHOBuckets);
+        replicas.put("SGL", SGLBuckets);
+
+        XDCRTracer tracer = new XDCRTracer(interval, ttl, sources, replicas);
         tracer.run();
-        tracer.shutdown();
+
+        CHO.disconnect();
+        SGL.disconnect();
+        env.shutdown();
     }
 }
