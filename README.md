@@ -17,10 +17,16 @@ parameter to the script. e.g.
 
     java -jar xdcr_tracer example.json
 
+XDCRTracer will return the cluster name, bucket name and a list of vBuckets
+in the instance that the document was missing or an error was encountered
+whilst retrieving it.
+
+     Missing documents in CHO/default: [100, 101, 102, ... , 199]
+
 ## Configuration
 
  - `Number interval` How long to leave between upserting keys and checking for
- propogation.
+ propagation.
 
  - `Number ttl` How long should the tracing documents exist for. Minimum should be
  `interval + time taken to insert keys + time taken to check keys`. Recommend
