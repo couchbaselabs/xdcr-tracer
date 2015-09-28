@@ -89,16 +89,15 @@ public class XDCRTracer
         }
 
         destinations.forEach((clusterName, buckets) -> {
-                debug("Checking cluster: " + clusterName);
-                buckets.forEach(bucket -> {
-                    debug("Checking bucket: " + clusterName + "/" + bucket.name());
-                    ArrayList<Integer> badvBuckets = checkBucket(bucket, keys);
-                    if (badvBuckets.size() > 0) {
-                        System.out.println("Missing documents in " + clusterName + "/" + bucket.name() + ": " + badvBuckets);
-                    }
-                });
-            }
-        );
+            debug("Checking cluster: " + clusterName);
+            buckets.forEach(bucket -> {
+                debug("Checking bucket: " + clusterName + "/" + bucket.name());
+                ArrayList<Integer> badvBuckets = checkBucket(bucket, keys);
+                if (badvBuckets.size() > 0) {
+                    System.out.println("Missing documents in " + clusterName + "/" + bucket.name() + ": " + badvBuckets);
+                }
+            });
+        });
     }
 
     public void run() {
