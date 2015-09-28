@@ -237,8 +237,6 @@ public class XDCRTracer
             clusters.forEach(Cluster::disconnect);
             env.shutdown();
 
-
-
         } catch(FileNotFoundException e) {
             System.err.println("JSON configuration file '" + args[0] + "' does not exist.");
         } catch(ParseException e) {
