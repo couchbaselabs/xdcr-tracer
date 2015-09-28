@@ -61,20 +61,6 @@ public class XDCRTracer
     }
 
     /**
-     * Creates a list of bucket connections to a cluster
-     * @param cluster Cluster to open bucket connections in
-     * @param bucketNames List of bucket names to open
-     * @return List of buckets
-     */
-    protected HashMap<String, Bucket> openBuckets(Cluster cluster, ArrayList<String> bucketNames)
-    {
-        HashMap<String, Bucket> buckets = new HashMap<>();
-        bucketNames.forEach(bucketName -> buckets.put(bucketName, cluster.openBucket(bucketName)));
-
-        return buckets;
-    }
-
-    /**
      * Creates keys in every vBucket in every bucket in every
      * source cluster and checks that all the keys make it to all the
      * clusters.
