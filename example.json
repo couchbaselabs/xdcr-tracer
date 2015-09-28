@@ -1,0 +1,25 @@
+{
+	"interval": 60,
+	"ttl": 120,
+	"repeat": true,
+	"debug": false,
+
+	"sources": {
+		"SGL": {
+			"connection":["192.168.75.103"], 
+			"buckets":{
+				"default": ""
+			}
+		}
+	},
+
+	"replicas": {
+		"CHO": {
+			"connection":["192.168.75.101", "192.168.75.102"], 
+			"buckets":{
+				"default": ""
+			}
+		}
+	}
+
+}

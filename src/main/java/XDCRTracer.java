@@ -1,3 +1,5 @@
+import java.io.FileNotFoundException;
+import java.io.FileReader;
 import java.util.*;
 
 import com.couchbase.client.java.Bucket;
@@ -10,6 +12,11 @@ import com.couchbase.client.java.env.DefaultCouchbaseEnvironment;
 
 import rx.Observable;
 
+import org.json.simple.JSONArray;
+import org.json.simple.JSONObject;
+import org.json.simple.parser.JSONParser;
+import org.json.simple.parser.ParseException;
+
 /**
  * XDCRTracer creates a document in every vBucket in every Bucket in every
  * cluster at a specified time interval and ensures that they get to the
@@ -19,6 +26,7 @@ public class XDCRTracer
 {
     protected int interval;
     protected int ttl;
+    protected boolean debug;
 
     protected Map<String, ArrayList<Bucket>> origins;
     protected Map<String, ArrayList<Bucket>> destinations;
@@ -34,11 +42,13 @@ public class XDCRTracer
             int interval,
             int ttl,
             Map<String, ArrayList<Bucket>> sources,
-            Map<String, ArrayList<Bucket>> replicas
+            Map<String, ArrayList<Bucket>> replicas,
+            boolean debug
     )
     {
         this.interval = interval;
         this.ttl = ttl;
+        this.debug = debug;
 
         if (ttl <= interval) throw new AssertionError("TTL must be greater than interval!");
 
@@ -77,6 +87,7 @@ public class XDCRTracer
 
         // Add all the keys
         origins.forEach((clusterName, buckets) -> {
+            debug("Adding keys to cluster: " + clusterName);
             String[] clusterKeys = KeyGen.fillVBuckets(
                     "XDCRTracer_" + clusterName + "_" + System.currentTimeMillis() / 1000l + "_"
             );
@@ -84,22 +95,23 @@ public class XDCRTracer
             buckets.forEach(bucket -> seedBucket(bucket, clusterKeys));
         });
 
+        debug("Sleeping for " + interval + " seconds.");
         try {
             Thread.sleep(interval * 1000);
         } catch(InterruptedException e) {
             Thread.currentThread().interrupt();
         }
 
-
-        destinations.forEach((clusterName, buckets) ->
-            buckets.forEach(bucket -> {
-                System.out.println("Checking bucket: " + clusterName + "/" + bucket.name());
-                ArrayList<Integer> badvBuckets = checkBucket(bucket, keys);
-                if (badvBuckets.size() > 0) {
-                    System.out.println("Missing documents in " + clusterName + "/" + bucket.name() + ": " + badvBuckets);
-                }
-            })
-
+        destinations.forEach((clusterName, buckets) -> {
+                debug("Checking cluster: " + clusterName);
+                buckets.forEach(bucket -> {
+                    debug("Checking bucket: " + clusterName + "/" + bucket.name());
+                    ArrayList<Integer> badvBuckets = checkBucket(bucket, keys);
+                    if (badvBuckets.size() > 0) {
+                        System.out.println("Missing documents in " + clusterName + "/" + bucket.name() + ": " + badvBuckets);
+                    }
+                });
+            }
         );
     }
 
@@ -154,39 +166,106 @@ public class XDCRTracer
                 .single();
     }
 
+    protected void debug(String str) {
+        if(debug) {
+            System.out.println(str);
+        }
+    }
+
     /**
      * Handles CLI entry
      * @param args
      */
     public static void main(String [] args)
     {
-        int interval = 5; // Delays
-        int ttl = 15;
 
-        CouchbaseEnvironment env = DefaultCouchbaseEnvironment.create();
+        JSONParser parser = new JSONParser();
 
-        /* CHO Bucket Connections */
-        CouchbaseCluster CHO = CouchbaseCluster.create(env, Arrays.asList("192.168.75.101", "192.168.75.102"));
-        Bucket CHO_Default = CHO.openBucket("default");
-        ArrayList<Bucket> CHOBuckets = new ArrayList<>(Arrays.asList(CHO_Default));
 
-        /* SGL Bucket Connections */
-        CouchbaseCluster SGL = CouchbaseCluster.create(env, "192.168.75.103");
-        Bucket SGL_Default = SGL.openBucket("default");
-        ArrayList<Bucket> SGLBuckets = new ArrayList<>(Arrays.asList(SGL_Default));
+        try {
+            FileReader file = new FileReader(args[0]);
+            Object object = parser.parse(file);
 
-        /* Buckets maps */
-        Map<String, ArrayList<Bucket>> sources = new HashMap<>();
-        Map<String, ArrayList<Bucket>> replicas = new HashMap<>();
+            JSONObject jsonObject = (JSONObject) object;
 
-        sources.put("CHO", CHOBuckets);
-        replicas.put("SGL", SGLBuckets);
+            int interval = ((Long) jsonObject.get("interval")).intValue();
+            int ttl = ((Long) jsonObject.get("ttl")).intValue();
+            boolean repeat = (boolean) jsonObject.get("repeat");
+            boolean debug = (boolean) jsonObject.get("debug");
 
-        XDCRTracer tracer = new XDCRTracer(interval, ttl, sources, replicas);
-        tracer.run();
 
-        CHO.disconnect();
-        SGL.disconnect();
-        env.shutdown();
+            JSONObject sourceList = (JSONObject) jsonObject.get("sources");
+            JSONObject replicaList = (JSONObject) jsonObject.get("replicas");
+
+            CouchbaseEnvironment env = DefaultCouchbaseEnvironment.create();
+            Map<String, ArrayList<Bucket>> sources = new HashMap<>();
+            Map<String, ArrayList<Bucket>> replicas = new HashMap<>();
+
+            List<Cluster> clusters = new ArrayList<>();
+
+            sourceList.forEach((k, v) -> {
+                String clusterName = (String) k;
+                JSONObject clusterConfig = (JSONObject) v;
+
+                List<String> connection = (JSONArray) clusterConfig.get("connection");
+                Map<String, String> bucketConfigs = (JSONObject) clusterConfig.get("buckets");
+
+                Cluster cluster = CouchbaseCluster.create(env, connection);
+                clusters.add(cluster);
+
+                ArrayList<Bucket> buckets = new ArrayList<>();
+                bucketConfigs.forEach((name, password) -> {
+                    Bucket bucket = cluster.openBucket(name, password);
+                    buckets.add(bucket);
+                });
+
+                sources.put(clusterName, buckets);
+            });
+
+            replicaList.forEach((k, v) -> {
+                String clusterName = (String) k;
+                JSONObject clusterConfig = (JSONObject) v;
+
+                List<String> connection = (JSONArray) clusterConfig.get("connection");
+                Map<String, String> bucketConfigs = (JSONObject) clusterConfig.get("buckets");
+
+                Cluster cluster = CouchbaseCluster.create(env, connection);
+                clusters.add(cluster);
+
+                ArrayList<Bucket> buckets = new ArrayList<>();
+                bucketConfigs.forEach((name, password) -> {
+                    Bucket bucket = cluster.openBucket(name, password);
+                    buckets.add(bucket);
+                });
+
+                replicas.put(clusterName, buckets);
+            });
+
+            XDCRTracer tracer = new XDCRTracer(interval, ttl, sources, replicas, debug);
+
+            if(repeat) {
+                tracer.run();
+            } else {
+                tracer.runOnce();
+            }
+
+            clusters.forEach(Cluster::disconnect);
+            env.shutdown();
+
+
+
+        } catch(FileNotFoundException e) {
+            System.err.println("JSON configuration file '" + args[0] + "' does not exist.");
+        } catch(ParseException e) {
+            System.err.println("JSON configuration file '" + args[0] + " is not JSON.'");
+        } catch(NullPointerException e) {
+            System.err.println("NullPointerException: Your JSON config file is probably missing stuff.");
+            e.printStackTrace();
+        } catch(ArrayIndexOutOfBoundsException e) {
+            System.err.println("You must specify a JSON configuration file!");
+        } catch(Exception e) {
+            System.err.println("Unexpected error:");
+            e.printStackTrace();
+        }
     }
 }
