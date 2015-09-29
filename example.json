@@ -1,25 +1,36 @@
 {
-	"interval": 60,
-	"ttl": 120,
-	"repeat": true,
-	"debug": false,
+  "interval": 60,
+  "ttl": 120,
+  "repeat": true,
+  "debug": false,
 
-	"sources": {
-		"SGL": {
-			"connection":["192.168.75.103"], 
-			"buckets":{
-				"default": ""
-			}
-		}
-	},
+  "sources": {
+    "SGL": {
+      "connection":["192.168.75.101"],
+      "buckets": {
+        "default": "password"
+      }
+    },
+    "BTD": {
+      "connection":["192.168.75.102"],
+      "buckets": {
+        "default": "password"
+      }
+    },
+    "IXF": {
+      "connection":["192.168.75.103"],
+      "buckets": {
+        "default": "password"
+      }
+    }
+  },
 
-	"replicas": {
-		"CHO": {
-			"connection":["192.168.75.101", "192.168.75.102"], 
-			"buckets":{
-				"default": ""
-			}
-		}
-	}
-
+  "replicas": {
+    "CHO": {
+      "connection":["192.168.75.104"],
+      "buckets": {
+        "default": "password"
+      }
+    }
+  }
 }
